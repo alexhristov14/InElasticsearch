@@ -13,12 +13,13 @@ import org.apache.lucene.search.TopDocs;
 import java.nio.file.Path;
 import java.util.ArrayList;
 
-public class SearchService {
+public class SearchService implements AutoCloseable {
   private final IndexSearcher searcher;
+  private final DirectoryReader reader;
 
   public SearchService(Path index) throws Exception {
     Directory dir = FSDirectory.open(index);
-    DirectoryReader reader = DirectoryReader.open(dir);
+    this.reader = DirectoryReader.open(dir);
     this.searcher = new IndexSearcher(reader);
   }
 
@@ -32,5 +33,10 @@ public class SearchService {
     }
 
     return docs;
+  }
+
+  @Override
+  public void close() throws Exception {
+    reader.close();
   }
 }
