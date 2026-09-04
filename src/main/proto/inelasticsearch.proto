@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package inelasticsearch;
+
+option java_package = "com.example.inelasticsearch.rpc";
+option java_multiple_files = true;
+
+message Field {
+  string name = 1;
+
+  oneof value {
+    string text_value = 2;
+    string keyword_value = 3;
+    int64 int_value = 4;
+    double double_value = 5;
+    bool bool_value = 6;
+  }
+
+  bool stored = 7;
+}
+
+message Document {
+  string id = 1;
+  repeated Field fields = 2;
+}
+
+message IndexRequest {
+  string index_name = 1;
+  Document document = 2;
+}
+
+message IndexResponse {
+  bool success = 1;
+  string error_message = 2;
+  string doc_id = 3;
+}
+
+message BulkIndexRequest {
+  string index_name = 1;
+  repeated Document documents = 2;
+}
+
+message BulkIndexResponse {
+  int32 succeeded = 1;
+  int32 failed = 2;
+  repeated string error_messages = 3;
+}
+
+service DataNodeService {
+  rpc IndexDocument(IndexRequest) returns (IndexResponse);
+  rpc BulkIndexDocument(BulkIndexRequest) returns (BulkIndexResponse);
+}
