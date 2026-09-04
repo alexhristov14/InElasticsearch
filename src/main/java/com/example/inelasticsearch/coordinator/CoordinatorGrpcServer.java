@@ -1,23 +1,23 @@
-package com.example.inelasticsearch.grpc;
+package com.example.inelasticsearch.coordinator;
 
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
 
 import java.util.concurrent.TimeUnit;
 
-public class GrpcServer {
+public class CoordinatorGrpcServer {
 
   private final Server server;
-  private final DataNodeServiceImpl service;
+  private final CoordinatorServiceImpl service;
 
-  public GrpcServer(int port, DataNodeServiceImpl service) {
+  public CoordinatorGrpcServer(int port, CoordinatorServiceImpl service) {
     this.service = service;
     this.server = ServerBuilder.forPort(port).addService(service).build();
   }
 
   public void start() throws Exception {
     server.start();
-    System.out.println("InElasticsearch gRPC server started on port " + server.getPort());
+    System.out.println("InElasticsearch coordinator started on port " + server.getPort());
     Runtime.getRuntime().addShutdownHook(new Thread(this::stop));
   }
 
@@ -29,11 +29,7 @@ public class GrpcServer {
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
     }
-    try {
-      service.close();
-    } catch (Exception e) {
-      System.err.println("Error closing data node service: " + e.getMessage());
-    }
+    service.close();
   }
 
   public void awaitTermination() throws InterruptedException {

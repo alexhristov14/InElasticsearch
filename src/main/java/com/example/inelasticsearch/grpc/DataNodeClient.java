@@ -1,5 +1,7 @@
 package com.example.inelasticsearch.grpc;
 
+import com.example.inelasticsearch.rpc.BulkIndexRequest;
+import com.example.inelasticsearch.rpc.BulkIndexResponse;
 import com.example.inelasticsearch.rpc.DataNodeServiceGrpc;
 import com.example.inelasticsearch.rpc.Document;
 import com.example.inelasticsearch.rpc.IndexRequest;
@@ -9,6 +11,7 @@ import com.example.inelasticsearch.rpc.SearchResponse;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 public class DataNodeClient implements AutoCloseable {
@@ -25,6 +28,12 @@ public class DataNodeClient implements AutoCloseable {
     IndexRequest request =
         IndexRequest.newBuilder().setIndexName(indexName).setDocument(document).build();
     return stub.indexDocument(request);
+  }
+
+  public BulkIndexResponse bulkIndex(String indexName, List<Document> documents) {
+    BulkIndexRequest request =
+        BulkIndexRequest.newBuilder().setIndexName(indexName).addAllDocuments(documents).build();
+    return stub.bulkIndexDocument(request);
   }
 
   public SearchResponse search(String indexName, String query) {

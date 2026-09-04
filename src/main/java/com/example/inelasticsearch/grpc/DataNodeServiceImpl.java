@@ -16,19 +16,28 @@ import org.apache.lucene.queryparser.classic.QueryParser;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class DataNodeServiceImpl extends DataNodeServiceGrpc.DataNodeServiceImplBase
     implements AutoCloseable {
 
   private final Path dataDir;
-  private final int numShards;
+  private final int totalShards;
+  private final Set<Integer> ownedShards;
   private final Map<String, ShardRouter> routersByIndex = new ConcurrentHashMap<>();
   private final StandardAnalyzer analyzer = new StandardAnalyzer();
 
+  /** Single-node mode: this instance owns every shard of every index. */
   public DataNodeServiceImpl(Path dataDir, int numShards) {
+    this(dataDir, numShards, null);
+  }
+
+  /** Multi-node mode: this instance only owns {@code ownedShards}, the rest live elsewhere. */
+  public DataNodeServiceImpl(Path dataDir, int totalShards, Set<Integer> ownedShards) {
     this.dataDir = dataDir;
-    this.numShards = numShards;
+    this.totalShards = totalShards;
+    this.ownedShards = ownedShards;
   }
 
   @Override
@@ -103,7 +112,10 @@ public class DataNodeServiceImpl extends DataNodeServiceGrpc.DataNodeServiceImpl
       }
       Path indexDir = dataDir.resolve(indexName);
       Files.createDirectories(indexDir);
-      ShardRouter router = new ShardRouter(indexDir, numShards);
+      ShardRouter router =
+          ownedShards == null
+              ? new ShardRouter(indexDir, totalShards)
+              : new ShardRouter(indexDir, totalShards, ownedShards);
       routersByIndex.put(indexName, router);
       return router;
     }

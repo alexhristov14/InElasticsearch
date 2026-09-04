@@ -7,8 +7,10 @@ import com.example.inelasticsearch.rpc.IndexResponse;
 import com.example.inelasticsearch.rpc.SearchResponse;
 
 /**
- * A remote client of {@link Server}: everything here goes over the wire via gRPC instead of
- * touching Lucene directly, showing how a caller uses the db from the outside.
+ * A remote client: everything here goes over the wire via gRPC instead of touching Lucene
+ * directly. By default it talks to {@link Coordinator}, which fans work out across the cluster's
+ * {@link Server} nodes, but it's the same {@code DataNodeService} contract either way — point it
+ * at a single {@code Server} instead and it works just as well against one node.
  */
 public class Client {
 
@@ -16,7 +18,7 @@ public class Client {
 
   public static void main(String[] args) throws Exception {
     String host = args.length > 0 ? args[0] : "localhost";
-    int port = args.length > 1 ? Integer.parseInt(args[1]) : 9090;
+    int port = args.length > 1 ? Integer.parseInt(args[1]) : 7000;
 
     try (DataNodeClient client = new DataNodeClient(host, port)) {
       System.out.println("=== Indexing documents on " + host + ":" + port + " ===");
