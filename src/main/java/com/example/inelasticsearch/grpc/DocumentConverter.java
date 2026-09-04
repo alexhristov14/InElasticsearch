@@ -22,6 +22,23 @@ final class DocumentConverter {
     return doc;
   }
 
+  static com.example.inelasticsearch.rpc.Document fromLuceneDocument(Document doc) {
+    com.example.inelasticsearch.rpc.Document.Builder builder =
+        com.example.inelasticsearch.rpc.Document.newBuilder().setId(doc.get("id"));
+
+    for (org.apache.lucene.index.IndexableField field : doc.getFields()) {
+      if (field.name().equals("id") || field.stringValue() == null) {
+        continue;
+      }
+      builder.addFields(
+          com.example.inelasticsearch.rpc.Field.newBuilder()
+              .setName(field.name())
+              .setTextValue(field.stringValue())
+              .setStored(true));
+    }
+    return builder.build();
+  }
+
   private static void addLuceneField(Document doc, com.example.inelasticsearch.rpc.Field protoField) {
     String name = protoField.getName();
     Field.Store store = protoField.getStored() ? Field.Store.YES : Field.Store.NO;

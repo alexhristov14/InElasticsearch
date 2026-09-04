@@ -3,13 +3,10 @@ package com.example.inelasticsearch.grpc;
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 
 public class GrpcServer {
-
-  private static final int DEFAULT_SHARDS_PER_INDEX = 3;
 
   private final Server server;
   private final DataNodeServiceImpl service;
@@ -44,14 +41,5 @@ public class GrpcServer {
     if (server != null) {
       server.awaitTermination();
     }
-  }
-
-  public static void main(String[] args) throws Exception {
-    int port = args.length > 0 ? Integer.parseInt(args[0]) : 9090;
-    Path dataDir = Files.createTempDirectory("inelasticsearch-data");
-
-    GrpcServer server = new GrpcServer(port, dataDir, DEFAULT_SHARDS_PER_INDEX);
-    server.start();
-    server.awaitTermination();
   }
 }

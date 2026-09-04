@@ -2,9 +2,10 @@ package com.example.inelasticsearch.grpc;
 
 import com.example.inelasticsearch.rpc.DataNodeServiceGrpc;
 import com.example.inelasticsearch.rpc.Document;
-import com.example.inelasticsearch.rpc.Field;
 import com.example.inelasticsearch.rpc.IndexRequest;
 import com.example.inelasticsearch.rpc.IndexResponse;
+import com.example.inelasticsearch.rpc.SearchRequest;
+import com.example.inelasticsearch.rpc.SearchResponse;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 
@@ -26,34 +27,14 @@ public class DataNodeClient implements AutoCloseable {
     return stub.indexDocument(request);
   }
 
+  public SearchResponse search(String indexName, String query) {
+    SearchRequest request =
+        SearchRequest.newBuilder().setIndexName(indexName).setQuery(query).build();
+    return stub.search(request);
+  }
+
   @Override
   public void close() throws InterruptedException {
     channel.shutdown().awaitTermination(5, TimeUnit.SECONDS);
-  }
-
-  public static void main(String[] args) throws Exception {
-    String host = args.length > 0 ? args[0] : "localhost";
-    int port = args.length > 1 ? Integer.parseInt(args[1]) : 9090;
-
-    Document doc =
-        Document.newBuilder()
-            .setId("1")
-            .addFields(
-                Field.newBuilder().setName("title").setTextValue("Hello gRPC").setStored(true))
-            .addFields(
-                Field.newBuilder()
-                    .setName("body")
-                    .setTextValue("Indexed over the wire via gRPC instead of HTTP.")
-                    .setStored(true))
-            .build();
-
-    try (DataNodeClient client = new DataNodeClient(host, port)) {
-      IndexResponse response = client.indexDocument("articles", doc);
-      if (response.getSuccess()) {
-        System.out.println("Indexed doc " + response.getDocId());
-      } else {
-        System.out.println("Failed to index: " + response.getErrorMessage());
-      }
-    }
   }
 }

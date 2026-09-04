@@ -6,8 +6,12 @@ import com.example.inelasticsearch.rpc.BulkIndexResponse;
 import com.example.inelasticsearch.rpc.DataNodeServiceGrpc;
 import com.example.inelasticsearch.rpc.IndexRequest;
 import com.example.inelasticsearch.rpc.IndexResponse;
+import com.example.inelasticsearch.rpc.SearchRequest;
+import com.example.inelasticsearch.rpc.SearchResponse;
 import io.grpc.stub.StreamObserver;
+import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.queryparser.classic.QueryParser;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -20,6 +24,7 @@ public class DataNodeServiceImpl extends DataNodeServiceGrpc.DataNodeServiceImpl
   private final Path dataDir;
   private final int numShards;
   private final Map<String, ShardRouter> routersByIndex = new ConcurrentHashMap<>();
+  private final StandardAnalyzer analyzer = new StandardAnalyzer();
 
   public DataNodeServiceImpl(Path dataDir, int numShards) {
     this.dataDir = dataDir;
@@ -65,6 +70,22 @@ public class DataNodeServiceImpl extends DataNodeServiceGrpc.DataNodeServiceImpl
     } catch (Exception e) {
       response.setFailed(request.getDocumentsList().size());
       response.addErrorMessages(e.getMessage() != null ? e.getMessage() : e.toString());
+    }
+    responseObserver.onNext(response.build());
+    responseObserver.onCompleted();
+  }
+
+  @Override
+  public void search(SearchRequest request, StreamObserver<SearchResponse> responseObserver) {
+    SearchResponse.Builder response = SearchResponse.newBuilder();
+    try {
+      ShardRouter router = routerFor(request.getIndexName());
+      for (Document doc : router.search(new QueryParser("body", analyzer).parse(request.getQuery()))) {
+        response.addHits(DocumentConverter.fromLuceneDocument(doc));
+      }
+      response.setSuccess(true);
+    } catch (Exception e) {
+      response.setSuccess(false).setErrorMessage(e.getMessage() != null ? e.getMessage() : e.toString());
     }
     responseObserver.onNext(response.build());
     responseObserver.onCompleted();
