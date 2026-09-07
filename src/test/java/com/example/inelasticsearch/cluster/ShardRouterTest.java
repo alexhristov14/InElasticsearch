@@ -14,6 +14,7 @@ import org.junit.rules.TemporaryFolder;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 
@@ -99,6 +100,27 @@ public class ShardRouterTest {
     List<Document> results = router.search(new TermQuery(new Term("body", "nonexistent")));
 
     assertEquals(0, results.size());
+  }
+
+  @Test
+  public void search_withShardFilter_returnsOnlyThatShard() throws Exception {
+    // "1" -> shard 1, "2" -> shard 2, "3" -> shard 0 (all different with 3 shards)
+    Document doc1 = new Document();
+    doc1.add(new StringField("id", "1", Field.Store.YES));
+    doc1.add(new TextField("body", "lucene powers search", Field.Store.YES));
+
+    Document doc2 = new Document();
+    doc2.add(new StringField("id", "2", Field.Store.YES));
+    doc2.add(new TextField("body", "lucene is fast", Field.Store.YES));
+
+    router.addDocument("1", doc1);
+    router.addDocument("2", doc2);
+    router.commit();
+
+    List<Document> results = router.search(new TermQuery(new Term("body", "lucene")), Set.of(1));
+
+    assertEquals(1, results.size());
+    assertEquals("1", results.get(0).get("id"));
   }
 
   @Test

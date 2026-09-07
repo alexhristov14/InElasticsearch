@@ -1,5 +1,6 @@
 package com.example.inelasticsearch.grpc;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import com.example.inelasticsearch.cluster.ClusterTopology;
@@ -76,9 +77,34 @@ public class ReplicationIntegrationTest {
     IndexResponse response = clientA.indexDocument("articles", doc);
     assertTrue(response.getSuccess());
 
-    SearchResponse found = pollUntilFound(clientB, "articles", "hello", 5_000);
+    // A node's default (unscoped) search only covers its own primary shards -- see
+    // defaultSearch_hasNoDuplicatesAcrossPrimaryAndReplica below -- so reading the replicated
+    // copy back directly requires scoping the request to the shard it's a replica for.
+    SearchResponse found = pollUntilFound(clientB, "articles", "hello", List.of(0), 5_000);
     assertTrue(found.getSuccess());
     assertTrue(found.getHitsList().stream().anyMatch(hit -> hit.getId().equals(docId)));
+  }
+
+  @Test
+  public void defaultSearch_hasNoDuplicatesAcrossPrimaryAndReplica() throws Exception {
+    // node-a is primary for shard 0; node-b holds it only as a replica.
+    String docId = docIdForShard(0);
+    Document doc =
+        Document.newBuilder()
+            .setId(docId)
+            .addFields(
+                Field.newBuilder().setName("body").setTextValue("hello dedup").setStored(true))
+            .build();
+    assertTrue(clientA.indexDocument("articles", doc).getSuccess());
+
+    // Wait for async replication to land node-b's replica copy of shard 0.
+    pollUntilFound(clientB, "articles", "dedup", List.of(0), 5_000);
+
+    SearchResponse fromPrimary = clientA.search("articles", "dedup");
+    SearchResponse fromReplicaNode = clientB.search("articles", "dedup");
+
+    assertEquals(1, fromPrimary.getHitsList().size());
+    assertEquals(0, fromReplicaNode.getHitsList().size());
   }
 
   private String docIdForShard(int shardId) {
@@ -91,12 +117,16 @@ public class ReplicationIntegrationTest {
   }
 
   private SearchResponse pollUntilFound(
-      DataNodeClient client, String indexName, String query, long timeoutMillis)
+      DataNodeClient client,
+      String indexName,
+      String query,
+      List<Integer> shardIds,
+      long timeoutMillis)
       throws InterruptedException {
     long deadline = System.currentTimeMillis() + timeoutMillis;
     SearchResponse last = SearchResponse.newBuilder().setSuccess(false).build();
     while (System.currentTimeMillis() < deadline) {
-      last = client.search(indexName, query);
+      last = client.search(indexName, query, shardIds);
       if (last.getSuccess() && !last.getHitsList().isEmpty()) {
         return last;
       }

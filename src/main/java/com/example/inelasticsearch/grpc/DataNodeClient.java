@@ -37,8 +37,17 @@ public class DataNodeClient implements AutoCloseable {
   }
 
   public SearchResponse search(String indexName, String query) {
+    return search(indexName, query, List.of());
+  }
+
+  /** @param shardIds restrict the search to these shards; empty means the node's default. */
+  public SearchResponse search(String indexName, String query, List<Integer> shardIds) {
     SearchRequest request =
-        SearchRequest.newBuilder().setIndexName(indexName).setQuery(query).build();
+        SearchRequest.newBuilder()
+            .setIndexName(indexName)
+            .setQuery(query)
+            .addAllShardIds(shardIds)
+            .build();
     return stub.search(request);
   }
 

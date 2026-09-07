@@ -14,11 +14,13 @@ import io.grpc.stub.StreamObserver;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.queryparser.classic.QueryParser;
+import org.apache.lucene.search.Query;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -107,7 +109,9 @@ public class DataNodeServiceImpl extends DataNodeServiceGrpc.DataNodeServiceImpl
     SearchResponse.Builder response = SearchResponse.newBuilder();
     try {
       ShardRouter router = routerFor(request.getIndexName());
-      for (Document doc : router.search(new QueryParser("body", analyzer).parse(request.getQuery()))) {
+      Set<Integer> shardFilter = searchShardFilter(request);
+      Query query = new QueryParser("body", analyzer).parse(request.getQuery());
+      for (Document doc : router.search(query, shardFilter)) {
         response.addHits(DocumentConverter.fromLuceneDocument(doc));
       }
       response.setSuccess(true);
@@ -116,6 +120,19 @@ public class DataNodeServiceImpl extends DataNodeServiceGrpc.DataNodeServiceImpl
     }
     responseObserver.onNext(response.build());
     responseObserver.onCompleted();
+  }
+
+  /**
+   * An explicit {@code shard_ids} list always wins (the coordinator uses it for replica
+   * fallback). Otherwise, in topology-aware mode, default to this node's primary shards so a
+   * shard's replica copy isn't double-counted alongside its primary in normal search fan-out.
+   * Single-node / raw-{@code ownedShards} mode (no topology) keeps searching everything it owns.
+   */
+  private Set<Integer> searchShardFilter(SearchRequest request) {
+    if (!request.getShardIdsList().isEmpty()) {
+      return new HashSet<>(request.getShardIdsList());
+    }
+    return topology != null ? primaryShards : null;
   }
 
   private IndexResponse applySingle(

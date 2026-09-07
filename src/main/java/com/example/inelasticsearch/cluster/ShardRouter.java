@@ -70,9 +70,17 @@ public class ShardRouter implements AutoCloseable {
   }
 
   public List<Document> search(Query query) throws Exception {
+    return search(query, null);
+  }
+
+  /** @param shardIds restrict the search to these shards; {@code null} means all owned shards. */
+  public List<Document> search(Query query, Set<Integer> shardIds) throws Exception {
     List<Document> results = new ArrayList<>();
-    for (SearchService searcher : searchers.values()) {
-      results.addAll(searcher.runQuery(query));
+    for (Map.Entry<Integer, SearchService> entry : searchers.entrySet()) {
+      if (shardIds != null && !shardIds.contains(entry.getKey())) {
+        continue;
+      }
+      results.addAll(entry.getValue().runQuery(query));
     }
     return results;
   }

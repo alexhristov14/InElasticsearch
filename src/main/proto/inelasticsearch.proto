@@ -49,6 +49,11 @@ message BulkIndexResponse {
 message SearchRequest {
   string index_name = 1;
   string query = 2;
+
+  // Optional: restrict the search to these shard ids. Empty means "use this node's
+  // default" (its primary shards); the coordinator sets this explicitly when falling
+  // back to a specific replica-held shard after its primary is unreachable.
+  repeated int32 shard_ids = 3;
 }
 
 message SearchResponse {
