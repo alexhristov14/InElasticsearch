@@ -65,6 +65,20 @@ message BulkIndexResponse {
   repeated string error_messages = 3;
 }
 
+// A single-document delete by id. Handled as a client-facing request (only ever routed to a
+// shard's primary) by DeleteDocument, or as a peer-to-peer replicated delete (applied locally,
+// never forwarded again) by ReplicateDelete — same split as IndexRequest/ReplicateDocument.
+message DeleteRequest {
+  string index_name = 1;
+  string doc_id = 2;
+}
+
+message DeleteResponse {
+  bool success = 1;
+  string error_message = 2;
+  string doc_id = 3;
+}
+
 message SearchRequest {
   string index_name = 1;
   string query = 2;
@@ -85,14 +99,16 @@ message SearchResponse {
 }
 
 // The one contract implemented by both a data node and the coordinator (see the package-level
-// comment above). Six RPCs split into two groups: IndexDocument/BulkIndexDocument/Search are
-// the client-facing surface; ReplicateDocument/ReplicateBulkIndex are peer-to-peer only, used
-// by a shard's primary to push a write to its replicas, and are never expected to be called by
-// an end-client or forwarded onward by whoever receives them.
+// comment above). RPCs split into two groups: IndexDocument/BulkIndexDocument/DeleteDocument/
+// Search are the client-facing surface; ReplicateDocument/ReplicateBulkIndex/ReplicateDelete are
+// peer-to-peer only, used by a shard's primary to push a write or delete to its replicas, and
+// are never expected to be called by an end-client or forwarded onward by whoever receives them.
 service DataNodeService {
   rpc IndexDocument(IndexRequest) returns (IndexResponse);
   rpc BulkIndexDocument(BulkIndexRequest) returns (BulkIndexResponse);
+  rpc DeleteDocument(DeleteRequest) returns (DeleteResponse);
   rpc Search(SearchRequest) returns (SearchResponse);
   rpc ReplicateDocument(IndexRequest) returns (IndexResponse);
   rpc ReplicateBulkIndex(BulkIndexRequest) returns (BulkIndexResponse);
+  rpc ReplicateDelete(DeleteRequest) returns (DeleteResponse);
 }

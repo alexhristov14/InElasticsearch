@@ -6,6 +6,8 @@ import com.example.inelasticsearch.cluster.ShardRouter;
 import com.example.inelasticsearch.rpc.BulkIndexRequest;
 import com.example.inelasticsearch.rpc.BulkIndexResponse;
 import com.example.inelasticsearch.rpc.DataNodeServiceGrpc;
+import com.example.inelasticsearch.rpc.DeleteRequest;
+import com.example.inelasticsearch.rpc.DeleteResponse;
 import com.example.inelasticsearch.rpc.IndexRequest;
 import com.example.inelasticsearch.rpc.IndexResponse;
 import com.example.inelasticsearch.rpc.SearchRequest;
@@ -49,13 +51,14 @@ import java.util.concurrent.Executors;
  *       push writes out to peers. This is the one with replication and shard-scoped search.
  * </ul>
  *
- * <p><b>Write path:</b> {@link #indexDocument}/{@link #bulkIndexDocument} are the client-facing
- * RPCs (only ever called for a shard's primary — nothing here enforces that, it's upheld by
- * {@code CoordinatorServiceImpl} only routing writes to {@link ClusterTopology#nodeFor}). After
- * committing locally, a successful write is asynchronously pushed to that shard's replicas via
- * {@link #replicateAsync} using the peer-to-peer {@link #replicateDocument}/{@link
- * #replicateBulkIndex} RPCs, which apply the write locally and never forward it again (that's
- * what stops replication from looping).
+ * <p><b>Write path:</b> {@link #indexDocument}/{@link #bulkIndexDocument}/{@link #deleteDocument}
+ * are the client-facing RPCs (only ever called for a shard's primary — nothing here enforces
+ * that, it's upheld by {@code CoordinatorServiceImpl} only routing writes to {@link
+ * ClusterTopology#nodeFor}). After committing locally, a successful write or delete is
+ * asynchronously pushed to that shard's replicas via {@link #replicateAsync}/{@link
+ * #replicateDeleteAsync} using the peer-to-peer {@link #replicateDocument}/{@link
+ * #replicateBulkIndex}/{@link #replicateDelete} RPCs, which apply the change locally and never
+ * forward it again (that's what stops replication from looping).
  *
  * <p><b>Read path:</b> {@link #search} defaults to this node's primary shards only, so a
  * coordinator fanning a request out to every node never gets the same document back twice from
@@ -149,6 +152,28 @@ public class DataNodeServiceImpl extends DataNodeServiceGrpc.DataNodeServiceImpl
   }
 
   /**
+   * Client-facing delete-by-id. Same shape as {@link #indexDocument}: applies locally, replies
+   * immediately, then asynchronously replicates the delete to the shard's replicas if this node
+   * is its primary.
+   */
+  @Override
+  public void deleteDocument(DeleteRequest request, StreamObserver<DeleteResponse> responseObserver) {
+    DeleteResponse response = applyDelete(request.getIndexName(), request.getDocId());
+    if (response.getSuccess()) {
+      replicateDeleteAsync(request.getIndexName(), request.getDocId());
+    }
+    responseObserver.onNext(response);
+    responseObserver.onCompleted();
+  }
+
+  /** Peer-to-peer only: a primary pushes a delete here. Applied locally, never forwarded further. */
+  @Override
+  public void replicateDelete(DeleteRequest request, StreamObserver<DeleteResponse> responseObserver) {
+    responseObserver.onNext(applyDelete(request.getIndexName(), request.getDocId()));
+    responseObserver.onCompleted();
+  }
+
+  /**
    * Parses {@code request.getQuery()} as a Lucene classic query against the {@code "body"} field
    * and runs it through this node's locally stored shards, restricted per {@link
    * #searchShardFilter}.
@@ -193,6 +218,19 @@ public class DataNodeServiceImpl extends DataNodeServiceGrpc.DataNodeServiceImpl
       router.addDocument(protoDoc.getId(), doc);
       router.commit();
       response.setSuccess(true).setDocId(protoDoc.getId());
+    } catch (Exception e) {
+      response.setSuccess(false).setErrorMessage(e.getMessage() != null ? e.getMessage() : e.toString());
+    }
+    return response.build();
+  }
+
+  private DeleteResponse applyDelete(String indexName, String docId) {
+    DeleteResponse.Builder response = DeleteResponse.newBuilder().setDocId(docId);
+    try {
+      ShardRouter router = routerFor(indexName);
+      router.deleteDocument(docId);
+      router.commit();
+      response.setSuccess(true);
     } catch (Exception e) {
       response.setSuccess(false).setErrorMessage(e.getMessage() != null ? e.getMessage() : e.toString());
     }
@@ -264,6 +302,38 @@ public class DataNodeServiceImpl extends DataNodeServiceGrpc.DataNodeServiceImpl
             } catch (Exception e) {
               System.err.println(
                   "Replication to "
+                      + replica.id()
+                      + " failed: "
+                      + (e.getMessage() != null ? e.getMessage() : e));
+            }
+          });
+    }
+  }
+
+  /**
+   * Asynchronously pushes a delete to the shard's replicas, mirroring {@link #replicateAsync} for
+   * a single doc id instead of a batch of documents. Only replicates if this node is the shard's
+   * primary, and never blocks the caller.
+   */
+  private void replicateDeleteAsync(String indexName, String docId) {
+    if (topology == null) {
+      return;
+    }
+    int shardId = topology.shardFor(docId);
+    if (!primaryShards.contains(shardId)) {
+      return;
+    }
+    for (NodeAddress replica : topology.replicaNodesFor(shardId)) {
+      DataNodeClient client =
+          peerClients.computeIfAbsent(
+              replica.id(), id -> new DataNodeClient(replica.host(), replica.port()));
+      replicationExecutor.submit(
+          () -> {
+            try {
+              client.replicateDelete(indexName, docId);
+            } catch (Exception e) {
+              System.err.println(
+                  "Delete replication to "
                       + replica.id()
                       + " failed: "
                       + (e.getMessage() != null ? e.getMessage() : e));

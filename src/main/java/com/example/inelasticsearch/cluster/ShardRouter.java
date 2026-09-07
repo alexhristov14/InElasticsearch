@@ -106,6 +106,21 @@ public class ShardRouter implements AutoCloseable {
   }
 
   /**
+   * Deletes a document from whichever local shard it hashes to. Throws if this node doesn't have
+   * a writer open for that shard, same as {@link #addDocument}. Not reflected in search until the
+   * next {@link #commit()}.
+   */
+  public void deleteDocument(String id) throws Exception {
+    int shardId = Math.floorMod(id.hashCode(), totalShards);
+    IndexService writer = writers.get(shardId);
+    if (writer == null) {
+      throw new IllegalStateException(
+          "Shard " + shardId + " for doc '" + id + "' is not owned by this node");
+    }
+    writer.deleteDocument(id);
+  }
+
+  /**
    * Commits every owned shard's writer and reopens its searcher, so documents
    * added since the
    * last commit become visible to {@link #search}. Called after every write today

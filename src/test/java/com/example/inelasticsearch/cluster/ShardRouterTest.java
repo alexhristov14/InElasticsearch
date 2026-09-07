@@ -124,6 +124,39 @@ public class ShardRouterTest {
   }
 
   @Test
+  public void deleteDocument_thenCommit_documentIsNoLongerSearchable() throws Exception {
+    Document doc1 = new Document();
+    doc1.add(new StringField("id", "1", Field.Store.YES));
+    doc1.add(new TextField("body", "lucene powers search", Field.Store.YES));
+
+    Document doc2 = new Document();
+    doc2.add(new StringField("id", "2", Field.Store.YES));
+    doc2.add(new TextField("body", "lucene is fast", Field.Store.YES));
+
+    router.addDocument("1", doc1);
+    router.addDocument("2", doc2);
+    router.commit();
+
+    router.deleteDocument("1");
+    router.commit();
+
+    List<Document> results = router.search(new TermQuery(new Term("body", "lucene")));
+
+    assertEquals(1, results.size());
+    assertEquals("2", results.get(0).get("id"));
+  }
+
+  @Test(expected = IllegalStateException.class)
+  public void deleteDocument_shardNotOwnedByThisRouter_throws() throws Exception {
+    Path baseDir = temporaryFolder.newFolder("owned-shard-0-only").toPath();
+    try (ShardRouter restricted = new ShardRouter(baseDir, 3, Set.of(0))) {
+      // "1" hashes to shard 1 (see addDocuments_onDifferentShards_searchReturnsBoth), which this
+      // router doesn't own.
+      restricted.deleteDocument("1");
+    }
+  }
+
+  @Test
   public void commit_twice_newDocumentsAreVisible() throws Exception {
     Document doc1 = new Document();
     doc1.add(new StringField("id", "1", Field.Store.YES));

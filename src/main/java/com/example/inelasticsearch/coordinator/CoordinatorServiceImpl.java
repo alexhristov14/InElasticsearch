@@ -6,6 +6,8 @@ import com.example.inelasticsearch.grpc.DataNodeClient;
 import com.example.inelasticsearch.rpc.BulkIndexRequest;
 import com.example.inelasticsearch.rpc.BulkIndexResponse;
 import com.example.inelasticsearch.rpc.DataNodeServiceGrpc;
+import com.example.inelasticsearch.rpc.DeleteRequest;
+import com.example.inelasticsearch.rpc.DeleteResponse;
 import com.example.inelasticsearch.rpc.Document;
 import com.example.inelasticsearch.rpc.IndexRequest;
 import com.example.inelasticsearch.rpc.IndexResponse;
@@ -37,9 +39,9 @@ import java.util.concurrent.TimeUnit;
  * strategies:
  *
  * <ul>
- *   <li>{@link #indexDocument}/{@link #bulkIndexDocument} — always route to a shard's single
- *       primary ({@link ClusterTopology#nodeFor}). No replica involvement, no retry if the
- *       primary is down; that's the "primary-only writes" design.
+ *   <li>{@link #indexDocument}/{@link #bulkIndexDocument}/{@link #deleteDocument} — always route
+ *       to a shard's single primary ({@link ClusterTopology#nodeFor}). No replica involvement, no
+ *       retry if the primary is down; that's the "primary-only writes" design.
  *   <li>{@link #search} — round-robins across a shard's primary <em>and</em> replicas (via {@link
  *       ShardCopySelector}) so read load spreads across every live copy, and transparently falls
  *       back to the shard's other copies if whichever one was picked doesn't answer. See the
@@ -112,6 +114,24 @@ public class CoordinatorServiceImpl extends DataNodeServiceGrpc.DataNodeServiceI
       }
     }
     responseObserver.onNext(response.build());
+    responseObserver.onCompleted();
+  }
+
+  /** Same routing as {@link #indexDocument}: routes to the target shard's single primary. */
+  @Override
+  public void deleteDocument(DeleteRequest request, StreamObserver<DeleteResponse> responseObserver) {
+    NodeAddress node = topology.nodeFor(topology.shardFor(request.getDocId()));
+    DeleteResponse response;
+    try {
+      response = nodeClients.get(node.id()).deleteDocument(request.getIndexName(), request.getDocId());
+    } catch (Exception e) {
+      response =
+          DeleteResponse.newBuilder()
+              .setSuccess(false)
+              .setErrorMessage("Routing to " + node.id() + " failed: " + e.getMessage())
+              .build();
+    }
+    responseObserver.onNext(response);
     responseObserver.onCompleted();
   }
 

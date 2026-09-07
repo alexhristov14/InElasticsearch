@@ -3,6 +3,8 @@ package com.example.inelasticsearch.grpc;
 import com.example.inelasticsearch.rpc.BulkIndexRequest;
 import com.example.inelasticsearch.rpc.BulkIndexResponse;
 import com.example.inelasticsearch.rpc.DataNodeServiceGrpc;
+import com.example.inelasticsearch.rpc.DeleteRequest;
+import com.example.inelasticsearch.rpc.DeleteResponse;
 import com.example.inelasticsearch.rpc.Document;
 import com.example.inelasticsearch.rpc.IndexRequest;
 import com.example.inelasticsearch.rpc.IndexResponse;
@@ -48,6 +50,13 @@ public class DataNodeClient implements AutoCloseable {
     return stub.bulkIndexDocument(request);
   }
 
+  /** Client-facing delete — see {@code DataNodeServiceImpl#deleteDocument}. */
+  public DeleteResponse deleteDocument(String indexName, String docId) {
+    DeleteRequest request =
+        DeleteRequest.newBuilder().setIndexName(indexName).setDocId(docId).build();
+    return stub.deleteDocument(request);
+  }
+
   /** Unscoped search — the target node applies its own default shard filter. */
   public SearchResponse search(String indexName, String query) {
     return search(indexName, query, List.of());
@@ -79,6 +88,16 @@ public class DataNodeClient implements AutoCloseable {
     BulkIndexRequest request =
         BulkIndexRequest.newBuilder().setIndexName(indexName).addAllDocuments(documents).build();
     return stub.replicateBulkIndex(request);
+  }
+
+  /**
+   * Peer-to-peer only: pushes an already-committed-on-the-primary delete to a replica. See {@code
+   * DataNodeServiceImpl#replicateDelete} — never call this on a client-facing path.
+   */
+  public DeleteResponse replicateDelete(String indexName, String docId) {
+    DeleteRequest request =
+        DeleteRequest.newBuilder().setIndexName(indexName).setDocId(docId).build();
+    return stub.replicateDelete(request);
   }
 
   /** Shuts the underlying channel down, waiting up to 5s for in-flight calls to finish. */

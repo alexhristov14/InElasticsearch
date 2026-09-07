@@ -1,6 +1,7 @@
 package com.example.inelasticsearch;
 
 import com.example.inelasticsearch.grpc.DataNodeClient;
+import com.example.inelasticsearch.rpc.DeleteResponse;
 import com.example.inelasticsearch.rpc.Document;
 import com.example.inelasticsearch.rpc.Field;
 import com.example.inelasticsearch.rpc.IndexResponse;
@@ -51,6 +52,17 @@ public class Client {
 
       System.out.println("\n=== 5. Boolean query: body has 'engine' AND category is NOT 'java' ===");
       printResults(client.search(INDEX, "engine AND NOT category:java"));
+
+      System.out.println("\n=== 6. Delete doc 5, then re-run query 1 ===");
+      DeleteResponse deleteResponse = client.deleteDocument(INDEX, "5");
+      if (!deleteResponse.getSuccess()) {
+        System.out.println("Failed to delete 5: " + deleteResponse.getErrorMessage());
+      }
+      // A coordinator load-balances reads across a shard's primary and replicas, and the delete
+      // was only just asynchronously replicated -- give that a moment so this demo doesn't
+      // nondeterministically land on a replica that hasn't caught up yet.
+      Thread.sleep(200);
+      printResults(client.search(INDEX, "search"));
     }
   }
 

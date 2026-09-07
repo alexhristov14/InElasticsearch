@@ -2,6 +2,7 @@ package com.example.inelasticsearch.index;
 
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.index.IndexWriter;
+import org.apache.lucene.index.Term;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.index.IndexWriterConfig;
@@ -31,7 +32,15 @@ public class IndexService implements AutoCloseable {
     writer.addDocument(document);
   }
 
-  /** Flushes buffered documents to disk. A {@link SearchService} must reopen to see them. */
+  /**
+   * Buffers the deletion of every document whose stored {@code "id"} field matches {@code id}
+   * (there should only ever be one); not durable or reflected in search until {@link #commit()}.
+   */
+  public void deleteDocument(String id) throws Exception {
+    writer.deleteDocuments(new Term("id", id));
+  }
+
+  /** Flushes buffered documents (and deletes) to disk. A {@link SearchService} must reopen to see them. */
   public void commit() throws Exception {
     writer.commit();
   }

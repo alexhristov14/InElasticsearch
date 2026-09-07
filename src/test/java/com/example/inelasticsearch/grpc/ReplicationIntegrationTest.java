@@ -5,6 +5,7 @@ import static org.junit.Assert.assertTrue;
 
 import com.example.inelasticsearch.cluster.ClusterTopology;
 import com.example.inelasticsearch.cluster.NodeAddress;
+import com.example.inelasticsearch.rpc.DeleteResponse;
 import com.example.inelasticsearch.rpc.Document;
 import com.example.inelasticsearch.rpc.Field;
 import com.example.inelasticsearch.rpc.IndexResponse;
@@ -107,6 +108,26 @@ public class ReplicationIntegrationTest {
     assertEquals(0, fromReplicaNode.getHitsList().size());
   }
 
+  @Test
+  public void deleteOnPrimary_isAsynchronouslyReplicatedToReplica() throws Exception {
+    // node-a is the primary for shard 0; node-b is its only replica.
+    String docId = docIdForShard(0);
+    Document doc =
+        Document.newBuilder()
+            .setId(docId)
+            .addFields(
+                Field.newBuilder().setName("body").setTextValue("hello deletable").setStored(true))
+            .build();
+    assertTrue(clientA.indexDocument("articles", doc).getSuccess());
+    pollUntilFound(clientB, "articles", "deletable", List.of(0), 5_000);
+
+    DeleteResponse deleteResponse = clientA.deleteDocument("articles", docId);
+    assertTrue(deleteResponse.getSuccess());
+
+    boolean goneFromReplica = pollUntilGone(clientB, "articles", "deletable", List.of(0), 5_000);
+    assertTrue(goneFromReplica);
+  }
+
   private String docIdForShard(int shardId) {
     for (int i = 0; ; i++) {
       String candidate = "doc-" + i;
@@ -133,6 +154,25 @@ public class ReplicationIntegrationTest {
       Thread.sleep(100);
     }
     return last;
+  }
+
+  /** Polls until a scoped search no longer returns any hits, or the timeout elapses. */
+  private boolean pollUntilGone(
+      DataNodeClient client,
+      String indexName,
+      String query,
+      List<Integer> shardIds,
+      long timeoutMillis)
+      throws InterruptedException {
+    long deadline = System.currentTimeMillis() + timeoutMillis;
+    while (System.currentTimeMillis() < deadline) {
+      SearchResponse response = client.search(indexName, query, shardIds);
+      if (response.getSuccess() && response.getHitsList().isEmpty()) {
+        return true;
+      }
+      Thread.sleep(100);
+    }
+    return false;
   }
 
   private static int findFreePort() throws IOException {

@@ -9,6 +9,7 @@ import com.example.inelasticsearch.cluster.NodeAddress;
 import com.example.inelasticsearch.grpc.DataNodeClient;
 import com.example.inelasticsearch.grpc.DataNodeServiceImpl;
 import com.example.inelasticsearch.grpc.GrpcServer;
+import com.example.inelasticsearch.rpc.DeleteRequest;
 import com.example.inelasticsearch.rpc.Document;
 import com.example.inelasticsearch.rpc.Field;
 import com.example.inelasticsearch.rpc.IndexRequest;
@@ -132,6 +133,20 @@ public class CoordinatorFailoverTest {
       assertEquals(docIds.size(), hitIds.size());
       assertTrue(hitIds.containsAll(docIds));
     }
+  }
+
+  @Test
+  public void deleteDocument_routesToPrimary_andRemovesDocFromSearch() throws Exception {
+    String docId = docIdForShard(0);
+    indexDoc(docId, "hello deletable");
+    waitForReplicaCopy(0, "deletable");
+
+    DeleteRequest deleteRequest =
+        DeleteRequest.newBuilder().setIndexName("articles").setDocId(docId).build();
+    assertTrue(call(coordinator::deleteDocument, deleteRequest).getSuccess());
+
+    SearchResponse response = search("deletable");
+    assertFalse(response.getHitsList().stream().anyMatch(hit -> hit.getId().equals(docId)));
   }
 
   private void indexDoc(String docId, String body) {

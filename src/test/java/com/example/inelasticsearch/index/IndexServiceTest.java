@@ -54,4 +54,24 @@ public class IndexServiceTest {
       assertEquals(1, results.totalHits.value);
     }
   }
+
+  @Test
+  public void deleteDocument_thenCommit_documentIsNoLongerSearchable() throws Exception {
+    Document doc = new Document();
+    doc.add(new StringField("id", "1", Field.Store.YES));
+    doc.add(new TextField("body", "elasticsearch is a search engine", Field.Store.YES));
+
+    indexService.addDocument(doc);
+    indexService.commit();
+
+    indexService.deleteDocument("1");
+    indexService.commit();
+
+    try (DirectoryReader reader = DirectoryReader.open(FSDirectory.open(indexPath))) {
+      IndexSearcher searcher = new IndexSearcher(reader);
+      TopDocs results = searcher.search(new TermQuery(new Term("body", "search")), 10);
+
+      assertEquals(0, results.totalHits.value);
+    }
+  }
 }
