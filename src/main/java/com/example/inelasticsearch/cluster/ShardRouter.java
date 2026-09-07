@@ -13,6 +13,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * The per-node, per-index storage layer: owns one Lucene
@@ -37,11 +39,22 @@ import java.util.Set;
  * this class will happily accept a write for any shard it owns, which is
  * exactly what replication
  * relies on to apply a replicated write locally on a replica node.
+ *
+ * <p>{@link #search} and {@link #commit()} are safe to call concurrently from multiple threads —
+ * expected under real traffic, since one {@code ShardRouter} instance is shared by every
+ * concurrent request touching its index ({@code DataNodeServiceImpl} caches one per index name).
+ * A {@link ReadWriteLock} guards the {@code searchers} field: {@code commit()} takes the write
+ * lock while it closes the old {@link SearchService}s and swaps in freshly-opened ones, so a
+ * concurrent {@code search()} (read lock) can never be handed a reader that's mid-close — without
+ * it, a search could get an {@code AlreadyClosedException} from a commit closing the exact reader
+ * it was about to query. Multiple concurrent searches still don't block each other, only a commit
+ * excludes them (and vice versa).
  */
 public class ShardRouter implements AutoCloseable {
   private final int totalShards;
   private final Path baseDir;
   private final Map<Integer, IndexService> writers;
+  private final ReadWriteLock lock = new ReentrantReadWriteLock();
   private Map<Integer, SearchService> searchers;
 
   /**
@@ -130,17 +143,22 @@ public class ShardRouter implements AutoCloseable {
    * writes at the cost of a Lucene commit per request.
    */
   public void commit() throws Exception {
-    for (IndexService writer : writers.values()) {
-      writer.commit();
+    lock.writeLock().lock();
+    try {
+      for (IndexService writer : writers.values()) {
+        writer.commit();
+      }
+      for (SearchService searcher : searchers.values()) {
+        searcher.close();
+      }
+      Map<Integer, SearchService> refreshed = new LinkedHashMap<>();
+      for (int shardId : writers.keySet()) {
+        refreshed.put(shardId, new SearchService(baseDir.resolve("shard-" + shardId)));
+      }
+      searchers = refreshed;
+    } finally {
+      lock.writeLock().unlock();
     }
-    for (SearchService searcher : searchers.values()) {
-      searcher.close();
-    }
-    Map<Integer, SearchService> refreshed = new LinkedHashMap<>();
-    for (int shardId : writers.keySet()) {
-      refreshed.put(shardId, new SearchService(baseDir.resolve("shard-" + shardId)));
-    }
-    searchers = refreshed;
   }
 
   /**
@@ -156,14 +174,19 @@ public class ShardRouter implements AutoCloseable {
    *                 owned shards.
    */
   public List<Document> search(Query query, Set<Integer> shardIds) throws Exception {
-    List<Document> results = new ArrayList<>();
-    for (Map.Entry<Integer, SearchService> entry : searchers.entrySet()) {
-      if (shardIds != null && !shardIds.contains(entry.getKey())) {
-        continue;
+    lock.readLock().lock();
+    try {
+      List<Document> results = new ArrayList<>();
+      for (Map.Entry<Integer, SearchService> entry : searchers.entrySet()) {
+        if (shardIds != null && !shardIds.contains(entry.getKey())) {
+          continue;
+        }
+        results.addAll(entry.getValue().runQuery(query));
       }
-      results.addAll(entry.getValue().runQuery(query));
+      return results;
+    } finally {
+      lock.readLock().unlock();
     }
-    return results;
   }
 
   @Override

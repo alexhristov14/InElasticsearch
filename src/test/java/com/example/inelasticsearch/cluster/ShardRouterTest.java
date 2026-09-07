@@ -13,8 +13,14 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
 
@@ -153,6 +159,58 @@ public class ShardRouterTest {
       // "1" hashes to shard 1 (see addDocuments_onDifferentShards_searchReturnsBoth), which this
       // router doesn't own.
       restricted.deleteDocument("1");
+    }
+  }
+
+  @Test
+  public void concurrentSearchAndCommit_doesNotThrow() throws Exception {
+    // Regression test for a race where commit() could close a SearchService that a concurrent
+    // search() was still reading from, throwing "this IndexReader is closed" -- found by running
+    // LoadGenerator against a live cluster. One writer thread continuously indexes-and-commits
+    // while several reader threads continuously search, all sharing this test's single `router`;
+    // any exception surfacing via future.get() below fails the test.
+    Document seed = new Document();
+    seed.add(new StringField("id", "seed", Field.Store.YES));
+    seed.add(new TextField("body", "concurrency stress", Field.Store.YES));
+    router.addDocument("seed", seed);
+    router.commit();
+
+    long deadline = System.currentTimeMillis() + 1_500;
+    int readerThreads = 4;
+    ExecutorService pool = Executors.newFixedThreadPool(readerThreads + 1);
+    List<Future<?>> futures = new ArrayList<>();
+
+    AtomicInteger nextId = new AtomicInteger();
+    futures.add(
+        pool.submit(
+            (Callable<Void>)
+                () -> {
+                  while (System.currentTimeMillis() < deadline) {
+                    String id = "doc-" + nextId.incrementAndGet();
+                    Document doc = new Document();
+                    doc.add(new StringField("id", id, Field.Store.YES));
+                    doc.add(new TextField("body", "concurrency stress", Field.Store.YES));
+                    router.addDocument(id, doc);
+                    router.commit();
+                  }
+                  return null;
+                }));
+
+    for (int i = 0; i < readerThreads; i++) {
+      futures.add(
+          pool.submit(
+              (Callable<Void>)
+                  () -> {
+                    while (System.currentTimeMillis() < deadline) {
+                      router.search(new TermQuery(new Term("body", "concurrency")));
+                    }
+                    return null;
+                  }));
+    }
+
+    pool.shutdown();
+    for (Future<?> future : futures) {
+      future.get();
     }
   }
 
