@@ -37,15 +37,15 @@ public class CoordinatorServiceImpl extends DataNodeServiceGrpc.DataNodeServiceI
 
   private final ClusterTopology topology;
   private final Map<String, DataNodeClient> nodeClients = new HashMap<>();
-  private final Map<String, Set<Integer>> primaryShardsByNode = new HashMap<>();
+  private final ShardCopySelector selector;
   private final ExecutorService executor;
 
   public CoordinatorServiceImpl(ClusterTopology topology) {
     this.topology = topology;
     for (NodeAddress node : topology.nodes()) {
       nodeClients.put(node.id(), new DataNodeClient(node.host(), node.port()));
-      primaryShardsByNode.put(node.id(), topology.shardsOwnedBy(node.id()));
     }
+    this.selector = new ShardCopySelector(topology);
     this.executor = Executors.newFixedThreadPool(Math.max(1, topology.nodes().size()));
   }
 
@@ -93,35 +93,45 @@ public class CoordinatorServiceImpl extends DataNodeServiceGrpc.DataNodeServiceI
     responseObserver.onCompleted();
   }
 
-  private record NodeSearchOutcome(SearchResponse response, String failedNodeId) {
-    static NodeSearchOutcome ok(SearchResponse response) {
-      return new NodeSearchOutcome(response, null);
+  private record NodeBatchOutcome(SearchResponse response, List<Integer> failedShardIds) {
+    static NodeBatchOutcome ok(SearchResponse response) {
+      return new NodeBatchOutcome(response, null);
     }
 
-    static NodeSearchOutcome failed(String nodeId) {
-      return new NodeSearchOutcome(null, nodeId);
+    static NodeBatchOutcome failed(List<Integer> shardIds) {
+      return new NodeBatchOutcome(null, shardIds);
     }
   }
 
   @Override
   public void search(SearchRequest request, StreamObserver<SearchResponse> responseObserver) {
-    // Phase 1: every node answers for its primary shards only, so a shard's replica copy is
-    // never double-counted alongside its primary. A node that fails to respond doesn't fail the
-    // whole request -- its primary shards are queued for replica fallback instead.
-    List<Callable<NodeSearchOutcome>> tasks = new ArrayList<>();
-    for (NodeAddress node : topology.nodes()) {
-      DataNodeClient client = nodeClients.get(node.id());
+    // Phase 1: round-robin pick one copy (primary or a replica) per shard, batching shards by
+    // whichever node they landed on so it's still one scoped RPC per node, not per shard. Each
+    // shard's full rotated candidate list is kept around for phase 2 fallback.
+    Map<Integer, List<NodeAddress>> candidatesByShard = new HashMap<>();
+    Map<String, List<Integer>> shardsByNode = new HashMap<>();
+    for (int shardId = 0; shardId < topology.totalShards(); shardId++) {
+      List<NodeAddress> candidates = selector.nextCandidates(shardId);
+      candidatesByShard.put(shardId, candidates);
+      shardsByNode.computeIfAbsent(candidates.get(0).id(), n -> new ArrayList<>()).add(shardId);
+    }
+
+    List<Callable<NodeBatchOutcome>> tasks = new ArrayList<>();
+    for (Map.Entry<String, List<Integer>> entry : shardsByNode.entrySet()) {
+      DataNodeClient client = nodeClients.get(entry.getKey());
+      List<Integer> shardIds = entry.getValue();
       tasks.add(
           () -> {
             try {
-              return NodeSearchOutcome.ok(client.search(request.getIndexName(), request.getQuery()));
+              return NodeBatchOutcome.ok(
+                  client.search(request.getIndexName(), request.getQuery(), shardIds));
             } catch (Exception e) {
-              return NodeSearchOutcome.failed(node.id());
+              return NodeBatchOutcome.failed(shardIds);
             }
           });
     }
 
-    List<Future<NodeSearchOutcome>> futures;
+    List<Future<NodeBatchOutcome>> futures;
     try {
       futures = executor.invokeAll(tasks, SEARCH_FANOUT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
     } catch (InterruptedException e) {
@@ -130,15 +140,14 @@ public class CoordinatorServiceImpl extends DataNodeServiceGrpc.DataNodeServiceI
     }
 
     List<String> errors = new ArrayList<>();
-    Set<Integer> shardsNeedingFallback = new TreeSet<>();
+    Set<Integer> shardsNeedingRetry = new TreeSet<>();
     SearchResponse.Builder merged = SearchResponse.newBuilder();
     boolean anySucceeded = false;
-    for (Future<NodeSearchOutcome> future : futures) {
+    for (Future<NodeBatchOutcome> future : futures) {
       try {
-        NodeSearchOutcome outcome = future.get();
-        if (outcome.failedNodeId() != null) {
-          shardsNeedingFallback.addAll(
-              primaryShardsByNode.getOrDefault(outcome.failedNodeId(), Set.of()));
+        NodeBatchOutcome outcome = future.get();
+        if (outcome.failedShardIds() != null) {
+          shardsNeedingRetry.addAll(outcome.failedShardIds());
         } else if (outcome.response().getSuccess()) {
           anySucceeded = true;
           merged.addAllHits(outcome.response().getHitsList());
@@ -150,14 +159,16 @@ public class CoordinatorServiceImpl extends DataNodeServiceGrpc.DataNodeServiceI
       }
     }
 
-    // Phase 2: for each shard whose primary didn't answer, try its replicas in ring order.
-    for (int shardId : shardsNeedingFallback) {
+    // Phase 2: for each shard whose chosen copy didn't answer, try the rest of its candidates.
+    for (int shardId : shardsNeedingRetry) {
+      List<NodeAddress> candidates = candidatesByShard.get(shardId);
       boolean recovered = false;
-      for (NodeAddress replica : topology.replicaNodesFor(shardId)) {
+      for (int i = 1; i < candidates.size(); i++) {
+        NodeAddress candidate = candidates.get(i);
         try {
           SearchResponse response =
               nodeClients
-                  .get(replica.id())
+                  .get(candidate.id())
                   .search(request.getIndexName(), request.getQuery(), List.of(shardId));
           if (response.getSuccess()) {
             anySucceeded = true;
@@ -166,11 +177,11 @@ public class CoordinatorServiceImpl extends DataNodeServiceGrpc.DataNodeServiceI
             break;
           }
         } catch (Exception e) {
-          // try the next replica
+          // try the next candidate
         }
       }
       if (!recovered) {
-        errors.add("shard " + shardId + ": primary and all replicas unreachable");
+        errors.add("shard " + shardId + ": no live copy available");
       }
     }
 

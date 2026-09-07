@@ -1,5 +1,6 @@
 package com.example.inelasticsearch.coordinator;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -18,9 +19,11 @@ import io.grpc.stub.StreamObserver;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
+import java.util.stream.Collectors;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -37,13 +40,12 @@ public class CoordinatorFailoverTest {
   private GrpcServer serverA;
   private GrpcServer serverB;
   private GrpcServer serverC;
-  private int portB;
   private CoordinatorServiceImpl coordinator;
 
   @Before
   public void setUp() throws Exception {
     int portA = findFreePort();
-    portB = findFreePort();
+    int portB = findFreePort();
     int portC = findFreePort();
 
     topology =
@@ -109,6 +111,29 @@ public class CoordinatorFailoverTest {
     assertTrue(response.getErrorMessage().contains("shard 0"));
   }
 
+  @Test
+  public void search_isDuplicateFree_acrossManyRotations() throws Exception {
+    // One doc per shard, on a healthy 3-node cluster: repeated searches rotate which copy
+    // (primary or replica) answers for each shard, but the merged result must always be exactly
+    // one hit per shard -- never duplicated, never dropped.
+    List<String> docIds = new ArrayList<>();
+    for (int shardId = 0; shardId < topology.totalShards(); shardId++) {
+      String docId = docIdForShard(shardId);
+      docIds.add(docId);
+      indexDoc(docId, "hello rotation");
+      waitForReplicaCopy(shardId, "rotation");
+    }
+
+    for (int round = 0; round < 6; round++) {
+      SearchResponse response = search("rotation");
+      assertTrue(response.getSuccess());
+      List<String> hitIds =
+          response.getHitsList().stream().map(Document::getId).collect(Collectors.toList());
+      assertEquals(docIds.size(), hitIds.size());
+      assertTrue(hitIds.containsAll(docIds));
+    }
+  }
+
   private void indexDoc(String docId, String body) {
     Document doc =
         Document.newBuilder()
@@ -126,9 +151,10 @@ public class CoordinatorFailoverTest {
     return call(coordinator::search, request);
   }
 
-  /** Polls node-b directly, scoped to {@code shardId}, until the async-replicated doc lands. */
+  /** Polls shardId's replica node directly until the async-replicated doc lands. */
   private void waitForReplicaCopy(int shardId, String query) throws InterruptedException {
-    try (DataNodeClient replicaProbe = new DataNodeClient("localhost", portB)) {
+    NodeAddress replicaNode = topology.replicaNodesFor(shardId).get(0);
+    try (DataNodeClient replicaProbe = new DataNodeClient(replicaNode.host(), replicaNode.port())) {
       long deadline = System.currentTimeMillis() + 5_000;
       while (System.currentTimeMillis() < deadline) {
         SearchResponse response = replicaProbe.search("articles", query, List.of(shardId));
