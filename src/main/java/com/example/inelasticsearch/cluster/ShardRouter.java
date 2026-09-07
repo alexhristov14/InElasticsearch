@@ -14,16 +14,54 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * The per-node, per-index storage layer: owns one Lucene
+ * {@link IndexService}/{@link
+ * SearchService} pair per shard this node stores (as primary or replica — this
+ * class doesn't
+ * distinguish between the two, it just knows which shard ids it has local
+ * indices for). One
+ * {@code ShardRouter} exists per index name on a given node
+ * ({@code DataNodeServiceImpl} keeps a
+ * map of them); it does not talk to any other node.
+ *
+ * <p>
+ * Routing a write is purely local: {@link #addDocument} hashes the doc id the
+ * same way {@link
+ * ClusterTopology#shardFor} does and rejects it if this node doesn't have a
+ * writer for that
+ * shard. Nothing here enforces "primary-only writes" — that's a convention the
+ * coordinator and
+ * {@code DataNodeServiceImpl} uphold by only sending direct client writes to a
+ * shard's primary;
+ * this class will happily accept a write for any shard it owns, which is
+ * exactly what replication
+ * relies on to apply a replicated write locally on a replica node.
+ */
 public class ShardRouter implements AutoCloseable {
   private final int totalShards;
   private final Path baseDir;
   private final Map<Integer, IndexService> writers;
   private Map<Integer, SearchService> searchers;
 
+  /**
+   * Opens every shard of the index (single-node mode: this node owns the whole
+   * index).
+   */
   public ShardRouter(Path baseDir, int totalShards) throws Exception {
     this(baseDir, totalShards, allShards(totalShards));
   }
 
+  /**
+   * @param baseDir     the index's data directory; each owned shard gets a
+   *                    {@code shard-<id>}
+   *                    subdirectory holding its own independent Lucene index
+   * @param totalShards the index's total shard count (needed to hash doc ids the
+   *                    same way the
+   *                    rest of the cluster does, even though this node may only
+   *                    own a subset)
+   * @param ownedShards which shard ids to open local Lucene indices for
+   */
   public ShardRouter(Path baseDir, int totalShards, Set<Integer> ownedShards) throws Exception {
     this.totalShards = totalShards;
     this.baseDir = baseDir;
@@ -45,6 +83,18 @@ public class ShardRouter implements AutoCloseable {
     return shards;
   }
 
+  /**
+   * Adds a document to whichever local shard it hashes to. Throws if this node
+   * doesn't have a
+   * writer open for that shard — callers (the coordinator, or replication) are
+   * responsible for
+   * only routing here what actually belongs on this node.
+   *
+   * <p>
+   * Not visible for search until the next {@link #commit()} — Lucene readers only
+   * see a
+   * writer's changes after a commit + reopen.
+   */
   public void addDocument(String id, Document doc) throws Exception {
     int shardId = Math.floorMod(id.hashCode(), totalShards);
     IndexService writer = writers.get(shardId);
@@ -55,6 +105,15 @@ public class ShardRouter implements AutoCloseable {
     writer.addDocument(doc);
   }
 
+  /**
+   * Commits every owned shard's writer and reopens its searcher, so documents
+   * added since the
+   * last commit become visible to {@link #search}. Called after every write today
+   * (no batching
+   * of commits across requests), which keeps reads immediately consistent with a
+   * node's own
+   * writes at the cost of a Lucene commit per request.
+   */
   public void commit() throws Exception {
     for (IndexService writer : writers.values()) {
       writer.commit();
@@ -69,11 +128,18 @@ public class ShardRouter implements AutoCloseable {
     searchers = refreshed;
   }
 
+  /**
+   * Searches every shard this node owns and merges the hits. See
+   * {@link #search(Query, Set)}.
+   */
   public List<Document> search(Query query) throws Exception {
     return search(query, null);
   }
 
-  /** @param shardIds restrict the search to these shards; {@code null} means all owned shards. */
+  /**
+   * @param shardIds restrict the search to these shards; {@code null} means all
+   *                 owned shards.
+   */
   public List<Document> search(Query query, Set<Integer> shardIds) throws Exception {
     List<Document> results = new ArrayList<>();
     for (Map.Entry<Integer, SearchService> entry : searchers.entrySet()) {

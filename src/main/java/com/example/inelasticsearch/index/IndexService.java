@@ -9,9 +9,16 @@ import org.apache.lucene.document.Document;
 
 import java.nio.file.Path;
 
+/**
+ * Thin wrapper around a single Lucene {@link IndexWriter} for one shard's on-disk index. One
+ * instance per shard directory (see {@code ShardRouter}, which owns a map of these); this class
+ * has no concept of shards, nodes, or the cluster — it's purely "write documents to this
+ * directory with a {@link StandardAnalyzer}."
+ */
 public class IndexService implements AutoCloseable {
   private final IndexWriter writer;
 
+  /** Opens (or creates) a Lucene index at {@code indexPath}, ready to accept documents. */
   public IndexService(Path indexPath) throws Exception {
     Directory directory = FSDirectory.open(indexPath);
     StandardAnalyzer analyzer = new StandardAnalyzer();
@@ -19,10 +26,12 @@ public class IndexService implements AutoCloseable {
     this.writer = new IndexWriter(directory, config);
   }
 
+  /** Buffers a document for indexing; not durable or searchable until {@link #commit()}. */
   public void addDocument(Document document) throws Exception {
     writer.addDocument(document);
   }
 
+  /** Flushes buffered documents to disk. A {@link SearchService} must reopen to see them. */
   public void commit() throws Exception {
     writer.commit();
   }

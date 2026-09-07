@@ -1,10 +1,20 @@
 syntax = "proto3";
 
+// The single gRPC contract spoken by every process in the cluster: a real data node
+// (com.example.inelasticsearch.grpc.DataNodeServiceImpl) and the coordinator
+// (com.example.inelasticsearch.coordinator.CoordinatorServiceImpl) both implement
+// DataNodeService, which is what lets the coordinator sit transparently in front of the
+// cluster from a client's point of view. grpc-java turns the comments here into Javadoc on
+// the generated message/service classes under com.example.inelasticsearch.rpc.
 package inelasticsearch;
 
 option java_package = "com.example.inelasticsearch.rpc";
 option java_multiple_files = true;
 
+// One named, typed value on a Document. Exactly one of the oneof branches is set, chosen by
+// the field's semantics: text_value for full-text-analyzed content, keyword_value for exact-
+// match strings, int_value/double_value for numeric range queries, bool_value for flags. See
+// com.example.inelasticsearch.grpc.DocumentConverter for how each maps to a Lucene field type.
 message Field {
   string name = 1;
 
@@ -16,14 +26,21 @@ message Field {
     bool bool_value = 6;
   }
 
+  // Whether the original value is kept and returned on search hits, vs. indexed-but-not-stored
+  // (searchable but the value itself isn't retrievable from a hit).
   bool stored = 7;
 }
 
+// A single record: an application-chosen id (used for shard routing — see
+// ClusterTopology#shardFor) plus its fields.
 message Document {
   string id = 1;
   repeated Field fields = 2;
 }
 
+// A single-document write. Handled as a client-facing request (only ever routed to a shard's
+// primary) by IndexDocument, or as a peer-to-peer replicated write (applied locally, never
+// forwarded again) by ReplicateDocument.
 message IndexRequest {
   string index_name = 1;
   Document document = 2;
@@ -35,6 +52,8 @@ message IndexResponse {
   string doc_id = 3;
 }
 
+// Batch form of IndexRequest — one request indexing many documents, which may land on
+// different shards (and so, on a coordinator, different primary nodes) under the hood.
 message BulkIndexRequest {
   string index_name = 1;
   repeated Document documents = 2;
@@ -50,9 +69,12 @@ message SearchRequest {
   string index_name = 1;
   string query = 2;
 
-  // Optional: restrict the search to these shard ids. Empty means "use this node's
-  // default" (its primary shards); the coordinator sets this explicitly when falling
-  // back to a specific replica-held shard after its primary is unreachable.
+  // Optional: restrict the search to these shard ids. Empty means "use the target node's
+  // default" (its own primary shards, so a coordinator fanning out to every node never
+  // double-counts a shard's replica copy). The coordinator sets this explicitly for two
+  // reasons: normal round-robin load-balanced reads (asking a specific node for the specific
+  // shard(s) it was picked to serve this round) and replica fallback (retrying a shard against
+  // its next copy after the previously chosen one didn't answer).
   repeated int32 shard_ids = 3;
 }
 
@@ -62,6 +84,11 @@ message SearchResponse {
   repeated Document hits = 3;
 }
 
+// The one contract implemented by both a data node and the coordinator (see the package-level
+// comment above). Six RPCs split into two groups: IndexDocument/BulkIndexDocument/Search are
+// the client-facing surface; ReplicateDocument/ReplicateBulkIndex are peer-to-peer only, used
+// by a shard's primary to push a write to its replicas, and are never expected to be called by
+// an end-client or forwarded onward by whoever receives them.
 service DataNodeService {
   rpc IndexDocument(IndexRequest) returns (IndexResponse);
   rpc BulkIndexDocument(BulkIndexRequest) returns (BulkIndexResponse);

@@ -6,6 +6,16 @@ import com.example.inelasticsearch.rpc.Field;
 import com.example.inelasticsearch.rpc.IndexResponse;
 import com.example.inelasticsearch.rpc.SearchResponse;
 
+/**
+ * Runnable demo/smoke-test client: indexes a handful of sample documents, then runs a few
+ * different Lucene classic query shapes (term, exact keyword match, phrase, fuzzy, boolean)
+ * against them and prints the results. Not a general-purpose CLI — {@code index()}'s document set
+ * and {@code main()}'s query list are hardcoded, meant to be read as example usage of {@link
+ * DataNodeClient} and skimmed/run to sanity-check a running cluster (or single node) end to end.
+ *
+ * <p>Usage: {@code Client [host] [port]} — defaults to {@code localhost:7000}, i.e. a locally
+ * running {@code Coordinator}. Point it at a lone {@code Server} instead to bypass sharding.
+ */
 public class Client {
 
   private static final String INDEX = "articles";

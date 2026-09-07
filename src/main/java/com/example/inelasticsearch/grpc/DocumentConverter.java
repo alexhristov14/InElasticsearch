@@ -8,10 +8,16 @@ import org.apache.lucene.document.StoredField;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.document.TextField;
 
+/**
+ * Translates between the gRPC wire type ({@code com.example.inelasticsearch.rpc.Document}, a
+ * flat list of typed {@code Field}s) and a Lucene {@link Document}. Package-private — only {@link
+ * DataNodeServiceImpl} needs this, at the boundary where a request comes in or a hit goes out.
+ */
 final class DocumentConverter {
 
   private DocumentConverter() {}
 
+  /** Builds a Lucene document: a {@code StringField} for the id, plus one field per proto field. */
   static Document toLuceneDocument(com.example.inelasticsearch.rpc.Document protoDoc) {
     Document doc = new Document();
     doc.add(new StringField("id", protoDoc.getId(), Field.Store.YES));
@@ -22,6 +28,12 @@ final class DocumentConverter {
     return doc;
   }
 
+  /**
+   * Rebuilds a proto {@code Document} from a Lucene search hit. Only reconstructs stored,
+   * string-valued fields (everything indexed via {@link StoredField}/points comes back out
+   * through Lucene as a string too) — this is a lossy round trip, e.g. a field's original numeric
+   * vs. text/keyword type isn't recovered, just its stored string value.
+   */
   static com.example.inelasticsearch.rpc.Document fromLuceneDocument(Document doc) {
     com.example.inelasticsearch.rpc.Document.Builder builder =
         com.example.inelasticsearch.rpc.Document.newBuilder().setId(doc.get("id"));
@@ -39,6 +51,7 @@ final class DocumentConverter {
     return builder.build();
   }
 
+  /** Maps one proto {@code Field}'s {@code oneof} value to the matching Lucene field type(s). */
   private static void addLuceneField(Document doc, com.example.inelasticsearch.rpc.Field protoField) {
     String name = protoField.getName();
     Field.Store store = protoField.getStored() ? Field.Store.YES : Field.Store.NO;

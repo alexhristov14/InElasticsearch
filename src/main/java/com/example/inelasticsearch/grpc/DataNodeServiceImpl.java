@@ -28,6 +28,41 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+/**
+ * The gRPC {@code DataNodeService} implementation that runs on every data node ({@code Server}
+ * hosts one). This is where documents actually get written to and read from Lucene — everything
+ * upstream ({@code Client}, {@code CoordinatorServiceImpl}) is just routing to reach one of
+ * these. One {@link com.example.inelasticsearch.cluster.ShardRouter} is kept per index name
+ * ({@code routersByIndex}), lazily created on first use.
+ *
+ * <p>Three constructors correspond to three ways this class gets used:
+ *
+ * <ul>
+ *   <li>{@link #DataNodeServiceImpl(Path, int)} — single-node mode, owns every shard, no
+ *       replication. Used by nothing in production but convenient for quick local testing.
+ *   <li>{@link #DataNodeServiceImpl(Path, int, Set)} — multi-node mode without topology
+ *       awareness: owns a fixed shard set, no replication. Mostly a test seam ({@code
+ *       DataNodeServiceImplTest}) now that the topology-aware constructor below covers real
+ *       multi-node deployments.
+ *   <li>{@link #DataNodeServiceImpl(Path, ClusterTopology, String)} — what {@code Server} always
+ *       uses: stores every shard this node owns as primary <em>or</em> replica, and knows how to
+ *       push writes out to peers. This is the one with replication and shard-scoped search.
+ * </ul>
+ *
+ * <p><b>Write path:</b> {@link #indexDocument}/{@link #bulkIndexDocument} are the client-facing
+ * RPCs (only ever called for a shard's primary — nothing here enforces that, it's upheld by
+ * {@code CoordinatorServiceImpl} only routing writes to {@link ClusterTopology#nodeFor}). After
+ * committing locally, a successful write is asynchronously pushed to that shard's replicas via
+ * {@link #replicateAsync} using the peer-to-peer {@link #replicateDocument}/{@link
+ * #replicateBulkIndex} RPCs, which apply the write locally and never forward it again (that's
+ * what stops replication from looping).
+ *
+ * <p><b>Read path:</b> {@link #search} defaults to this node's primary shards only, so a
+ * coordinator fanning a request out to every node never gets the same document back twice from
+ * both its primary and a replica copy. The coordinator overrides this by setting {@code
+ * shard_ids} explicitly on the request — both for replica-fallback when a primary is down, and
+ * (see {@code ShardCopySelector}) for normal round-robin load-balanced reads.
+ */
 public class DataNodeServiceImpl extends DataNodeServiceGrpc.DataNodeServiceImplBase
     implements AutoCloseable {
 
@@ -71,6 +106,11 @@ public class DataNodeServiceImpl extends DataNodeServiceGrpc.DataNodeServiceImpl
     this.replicationExecutor = Executors.newFixedThreadPool(2);
   }
 
+  /**
+   * Client-facing single-document write. Applies locally, replies immediately, then (if this is
+   * topology-aware and this node is the shard's primary) kicks off async replication — the
+   * caller never waits on replication completing.
+   */
   @Override
   public void indexDocument(IndexRequest request, StreamObserver<IndexResponse> responseObserver) {
     IndexResponse response = applySingle(request.getIndexName(), request.getDocument());
@@ -81,6 +121,10 @@ public class DataNodeServiceImpl extends DataNodeServiceGrpc.DataNodeServiceImpl
     responseObserver.onCompleted();
   }
 
+  /**
+   * Client-facing bulk write. Same shape as {@link #indexDocument}, but only successfully applied
+   * documents ({@link BulkApplyResult#appliedDocs()}) are handed to replication.
+   */
   @Override
   public void bulkIndexDocument(
       BulkIndexRequest request, StreamObserver<BulkIndexResponse> responseObserver) {
@@ -104,6 +148,11 @@ public class DataNodeServiceImpl extends DataNodeServiceGrpc.DataNodeServiceImpl
     responseObserver.onCompleted();
   }
 
+  /**
+   * Parses {@code request.getQuery()} as a Lucene classic query against the {@code "body"} field
+   * and runs it through this node's locally stored shards, restricted per {@link
+   * #searchShardFilter}.
+   */
   @Override
   public void search(SearchRequest request, StreamObserver<SearchResponse> responseObserver) {
     SearchResponse.Builder response = SearchResponse.newBuilder();
@@ -223,6 +272,7 @@ public class DataNodeServiceImpl extends DataNodeServiceGrpc.DataNodeServiceImpl
     }
   }
 
+  /** Returns the shared {@link ShardRouter} for an index, creating and caching it on first use. */
   private ShardRouter routerFor(String indexName) throws Exception {
     ShardRouter existing = routersByIndex.get(indexName);
     if (existing != null) {
@@ -244,6 +294,7 @@ public class DataNodeServiceImpl extends DataNodeServiceGrpc.DataNodeServiceImpl
     }
   }
 
+  /** Closes every open {@link ShardRouter}, the replication executor, and any peer connections. */
   @Override
   public void close() throws Exception {
     for (ShardRouter router : routersByIndex.values()) {

@@ -160,6 +160,9 @@
             <outputDirectory>${project.basedir}/docs</outputDirectory>
             <doclint>none</doclint>
             <excludePackageNames>com.example.inelasticsearch.rpc</excludePackageNames>
+            <!-- Internal onboarding docs, not a published public API: include package-private
+                 classes/members too (e.g. DocumentConverter, ShardCopySelector). -->
+            <show>package</show>
           </configuration>
         </plugin>
         <plugin>

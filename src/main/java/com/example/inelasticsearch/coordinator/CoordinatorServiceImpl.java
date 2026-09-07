@@ -26,9 +26,25 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Speaks the same {@code DataNodeService} contract as a data node but never touches Lucene: it
- * routes {@code IndexDocument} to the single node that owns the target shard, and scatters {@code
- * Search} to every node in parallel, merging whatever hits come back (scatter-gather).
+ * Speaks the exact same {@code DataNodeService} gRPC contract as a real data node ({@link
+ * com.example.inelasticsearch.grpc.DataNodeServiceImpl}) but never touches Lucene — it's a pure
+ * router. A client ({@code Client}, or anything else that only knows the coordinator's address)
+ * can't tell it apart from talking to a single giant node; every shard-aware decision (which
+ * node(s) to call, how to merge results) happens here instead.
+ *
+ * <p>Holds one {@link DataNodeClient} per node in the topology for the coordinator's whole
+ * lifetime, plus a {@link ShardCopySelector} for read routing. Writes and reads use different
+ * strategies:
+ *
+ * <ul>
+ *   <li>{@link #indexDocument}/{@link #bulkIndexDocument} — always route to a shard's single
+ *       primary ({@link ClusterTopology#nodeFor}). No replica involvement, no retry if the
+ *       primary is down; that's the "primary-only writes" design.
+ *   <li>{@link #search} — round-robins across a shard's primary <em>and</em> replicas (via {@link
+ *       ShardCopySelector}) so read load spreads across every live copy, and transparently falls
+ *       back to the shard's other copies if whichever one was picked doesn't answer. See the
+ *       method doc for the two-phase fan-out/fallback shape.
+ * </ul>
  */
 public class CoordinatorServiceImpl extends DataNodeServiceGrpc.DataNodeServiceImplBase
     implements AutoCloseable {
@@ -40,6 +56,7 @@ public class CoordinatorServiceImpl extends DataNodeServiceGrpc.DataNodeServiceI
   private final ShardCopySelector selector;
   private final ExecutorService executor;
 
+  /** Opens one {@link DataNodeClient} per node in {@code topology}; kept open until {@link #close()}. */
   public CoordinatorServiceImpl(ClusterTopology topology) {
     this.topology = topology;
     for (NodeAddress node : topology.nodes()) {
@@ -49,6 +66,7 @@ public class CoordinatorServiceImpl extends DataNodeServiceGrpc.DataNodeServiceI
     this.executor = Executors.newFixedThreadPool(Math.max(1, topology.nodes().size()));
   }
 
+  /** Routes to the target shard's single primary. See the class doc's write-path note. */
   @Override
   public void indexDocument(IndexRequest request, StreamObserver<IndexResponse> responseObserver) {
     NodeAddress node = topology.nodeFor(topology.shardFor(request.getDocument().getId()));
@@ -67,6 +85,10 @@ public class CoordinatorServiceImpl extends DataNodeServiceGrpc.DataNodeServiceI
     responseObserver.onCompleted();
   }
 
+  /**
+   * Same routing as {@link #indexDocument}, batched: groups the request's documents by target
+   * primary node so each node gets one bulk RPC instead of one call per document.
+   */
   @Override
   public void bulkIndexDocument(
       BulkIndexRequest request, StreamObserver<BulkIndexResponse> responseObserver) {
@@ -93,6 +115,12 @@ public class CoordinatorServiceImpl extends DataNodeServiceGrpc.DataNodeServiceI
     responseObserver.onCompleted();
   }
 
+  /**
+   * Result of one node's scoped search RPC for {@link #search}'s phase 1: either a successful
+   * {@code response}, or (on any exception — timeout, connection refused, etc.) the list of shard
+   * ids that were sent to that node and now need a phase-2 retry against their next candidate.
+   * Exactly one of the two fields is non-null.
+   */
   private record NodeBatchOutcome(SearchResponse response, List<Integer> failedShardIds) {
     static NodeBatchOutcome ok(SearchResponse response) {
       return new NodeBatchOutcome(response, null);
@@ -103,6 +131,29 @@ public class CoordinatorServiceImpl extends DataNodeServiceGrpc.DataNodeServiceI
     }
   }
 
+  /**
+   * Two-phase scatter-gather search, load-balanced and fault-tolerant per shard:
+   *
+   * <ol>
+   *   <li><b>Phase 1 — round-robin fan-out.</b> For every shard, ask {@link
+   *       ShardCopySelector#nextCandidates} which copy to try (cycling through primary and
+   *       replicas across successive calls) and remember the full ordered candidate list for
+   *       fallback. Shards are then grouped by whichever node they landed on, so a node holding
+   *       several chosen shards this round still gets one scoped RPC, not one per shard — and all
+   *       of those RPCs run in parallel on {@link #executor}, bounded by {@link
+   *       #SEARCH_FANOUT_TIMEOUT_SECONDS}.
+   *   <li><b>Phase 2 — per-shard fallback.</b> Any shard whose chosen node didn't answer gets
+   *       retried, one shard at a time, against the rest of its candidate list (in ring order,
+   *       skipping the copy that just failed) until one succeeds or the list is exhausted. A
+   *       shard only contributes an error to the final response if every one of its copies — not
+   *       just the one phase 1 happened to pick — turned out to be unreachable.
+   * </ol>
+   *
+   * <p>Because each shard is only ever queried once per round (one candidate in phase 1, or one
+   * more in phase 2 on failure), merged hits are never duplicated across a shard's copies. The
+   * response is marked successful if anything came back at all; per-shard/per-node failures are
+   * concatenated into {@code error_message} rather than failing the whole request.
+   */
   @Override
   public void search(SearchRequest request, StreamObserver<SearchResponse> responseObserver) {
     // Phase 1: round-robin pick one copy (primary or a replica) per shard, batching shards by
@@ -193,6 +244,7 @@ public class CoordinatorServiceImpl extends DataNodeServiceGrpc.DataNodeServiceI
     responseObserver.onCompleted();
   }
 
+  /** Shuts down the fan-out executor and every per-node client connection. */
   @Override
   public void close() {
     executor.shutdown();
