@@ -21,13 +21,21 @@ public class Server {
     ClusterTopology topology = args.length > 1 ? ClusterTopology.load(Path.of(args[1])) : ClusterTopology.loadDefault();
 
     NodeAddress self = topology.nodeById(nodeId);
-    Set<Integer> ownedShards = topology.shardsOwnedBy(nodeId);
+    Set<Integer> primaryShards = topology.shardsOwnedBy(nodeId);
+    Set<Integer> replicaShards = topology.replicaShardsOwnedBy(nodeId);
     Path dataDir = Files.createTempDirectory("inelasticsearch-data-" + nodeId);
 
-    System.out.println(nodeId + " owns shards " + ownedShards + " of " + topology.totalShards());
+    System.out.println(
+        nodeId
+            + " owns primary shards "
+            + primaryShards
+            + " and replica shards "
+            + replicaShards
+            + " of "
+            + topology.totalShards());
     System.out.println("Storing indices under " + dataDir);
 
-    DataNodeServiceImpl service = new DataNodeServiceImpl(dataDir, topology.totalShards(), ownedShards);
+    DataNodeServiceImpl service = new DataNodeServiceImpl(dataDir, topology, nodeId);
     GrpcServer server = new GrpcServer(self.port(), service);
     server.start();
     server.awaitTermination();

@@ -41,4 +41,8 @@ public class GrpcServer {
       server.awaitTermination();
     }
   }
+
+  public int getPort() {
+    return server.getPort();
+  }
 }

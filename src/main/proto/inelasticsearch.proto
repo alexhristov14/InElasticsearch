@@ -61,4 +61,6 @@ service DataNodeService {
   rpc IndexDocument(IndexRequest) returns (IndexResponse);
   rpc BulkIndexDocument(BulkIndexRequest) returns (BulkIndexResponse);
   rpc Search(SearchRequest) returns (SearchResponse);
+  rpc ReplicateDocument(IndexRequest) returns (IndexResponse);
+  rpc ReplicateBulkIndex(BulkIndexRequest) returns (BulkIndexResponse);
 }

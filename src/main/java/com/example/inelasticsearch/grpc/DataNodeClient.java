@@ -42,6 +42,18 @@ public class DataNodeClient implements AutoCloseable {
     return stub.search(request);
   }
 
+  public IndexResponse replicateDocument(String indexName, Document document) {
+    IndexRequest request =
+        IndexRequest.newBuilder().setIndexName(indexName).setDocument(document).build();
+    return stub.replicateDocument(request);
+  }
+
+  public BulkIndexResponse replicateBulkIndex(String indexName, List<Document> documents) {
+    BulkIndexRequest request =
+        BulkIndexRequest.newBuilder().setIndexName(indexName).addAllDocuments(documents).build();
+    return stub.replicateBulkIndex(request);
+  }
+
   @Override
   public void close() throws InterruptedException {
     channel.shutdown().awaitTermination(5, TimeUnit.SECONDS);

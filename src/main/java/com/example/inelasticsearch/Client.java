@@ -6,12 +6,6 @@ import com.example.inelasticsearch.rpc.Field;
 import com.example.inelasticsearch.rpc.IndexResponse;
 import com.example.inelasticsearch.rpc.SearchResponse;
 
-/**
- * A remote client: everything here goes over the wire via gRPC instead of touching Lucene
- * directly. By default it talks to {@link Coordinator}, which fans work out across the cluster's
- * {@link Server} nodes, but it's the same {@code DataNodeService} contract either way — point it
- * at a single {@code Server} instead and it works just as well against one node.
- */
 public class Client {
 
   private static final String INDEX = "articles";
@@ -52,14 +46,13 @@ public class Client {
 
   private static void index(DataNodeClient client, String id, String title, String category,
       String body) {
-    Document doc =
-        Document.newBuilder()
-            .setId(id)
-            .addFields(Field.newBuilder().setName("title").setTextValue(title).setStored(true))
-            .addFields(
-                Field.newBuilder().setName("category").setKeywordValue(category).setStored(true))
-            .addFields(Field.newBuilder().setName("body").setTextValue(body).setStored(true))
-            .build();
+    Document doc = Document.newBuilder()
+        .setId(id)
+        .addFields(Field.newBuilder().setName("title").setTextValue(title).setStored(true))
+        .addFields(
+            Field.newBuilder().setName("category").setKeywordValue(category).setStored(true))
+        .addFields(Field.newBuilder().setName("body").setTextValue(body).setStored(true))
+        .build();
 
     IndexResponse response = client.indexDocument(INDEX, doc);
     if (!response.getSuccess()) {

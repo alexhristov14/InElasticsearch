@@ -15,13 +15,19 @@ import java.util.TreeSet;
 public class ClusterTopology {
 
   private final int totalShards;
+  private final int replicaCount;
   private final List<NodeAddress> nodes;
 
   public ClusterTopology(int totalShards, List<NodeAddress> nodes) {
+    this(totalShards, 0, nodes);
+  }
+
+  public ClusterTopology(int totalShards, int replicaCount, List<NodeAddress> nodes) {
     if (nodes.isEmpty()) {
       throw new IllegalArgumentException("A cluster needs at least one node");
     }
     this.totalShards = totalShards;
+    this.replicaCount = replicaCount;
     this.nodes = List.copyOf(nodes);
   }
 
@@ -38,12 +44,17 @@ public class ClusterTopology {
     return parse(Files.readAllLines(configFile));
   }
 
-  private static ClusterTopology parse(List<String> lines) {
+  static ClusterTopology parse(List<String> lines) {
     int totalShards = 0;
+    int replicaCount = 0;
     List<NodeAddress> nodes = new ArrayList<>();
     for (String rawLine : lines) {
       String line = rawLine.strip();
-      if (line.isEmpty() || line.startsWith("#")) {
+      int hash = line.indexOf('#');
+      if (hash >= 0) {
+        line = line.substring(0, hash).strip();
+      }
+      if (line.isEmpty()) {
         continue;
       }
       int eq = line.indexOf('=');
@@ -54,6 +65,8 @@ public class ClusterTopology {
       String value = line.substring(eq + 1).strip();
       if (key.equals("totalShards")) {
         totalShards = Integer.parseInt(value);
+      } else if (key.equals("replicas")) {
+        replicaCount = Integer.parseInt(value);
       } else {
         int colon = value.lastIndexOf(':');
         nodes.add(new NodeAddress(key, value.substring(0, colon), Integer.parseInt(value.substring(colon + 1))));
@@ -62,11 +75,15 @@ public class ClusterTopology {
     if (totalShards <= 0) {
       throw new IllegalArgumentException("cluster config must set totalShards > 0");
     }
-    return new ClusterTopology(totalShards, nodes);
+    return new ClusterTopology(totalShards, replicaCount, nodes);
   }
 
   public int totalShards() {
     return totalShards;
+  }
+
+  public int replicaCount() {
+    return replicaCount;
   }
 
   public List<NodeAddress> nodes() {
@@ -101,6 +118,37 @@ public class ClusterTopology {
         shards.add(shardId);
       }
     }
+    return shards;
+  }
+
+  /** The nodes holding replica copies of a shard, in ring order after the primary. */
+  public List<NodeAddress> replicaNodesFor(int shardId) {
+    int n = nodes.size();
+    int effectiveReplicas = Math.min(replicaCount, n - 1);
+    int primaryIndex = shardId % n;
+    List<NodeAddress> replicas = new ArrayList<>();
+    for (int k = 1; k <= effectiveReplicas; k++) {
+      replicas.add(nodes.get((primaryIndex + k) % n));
+    }
+    return replicas;
+  }
+
+  /** Shards for which the given node holds a replica copy (never its own primary shards). */
+  public Set<Integer> replicaShardsOwnedBy(String nodeId) {
+    NodeAddress node = nodeById(nodeId);
+    Set<Integer> shards = new TreeSet<>();
+    for (int shardId = 0; shardId < totalShards; shardId++) {
+      if (replicaNodesFor(shardId).contains(node)) {
+        shards.add(shardId);
+      }
+    }
+    return shards;
+  }
+
+  /** Every shard this node stores locally, as primary or replica. */
+  public Set<Integer> allShardsOwnedBy(String nodeId) {
+    Set<Integer> shards = new TreeSet<>(shardsOwnedBy(nodeId));
+    shards.addAll(replicaShardsOwnedBy(nodeId));
     return shards;
   }
 
