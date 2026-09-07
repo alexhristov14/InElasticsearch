@@ -152,6 +152,17 @@
             <version>3.2.0</version>
         </plugin>
         <plugin>
+          <artifactId>maven-javadoc-plugin</artifactId>
+          <version>3.10.1</version>
+          <configuration>
+            <!-- `mvn javadoc:javadoc` writes straight into docs/ at the repo root so it can be
+                 served as-is by GitHub Pages (Settings > Pages > Deploy from a branch > /docs). -->
+            <outputDirectory>${project.basedir}/docs</outputDirectory>
+            <doclint>none</doclint>
+            <excludePackageNames>com.example.inelasticsearch.rpc</excludePackageNames>
+          </configuration>
+        </plugin>
+        <plugin>
           <groupId>com.diffplug.spotless</groupId>
           <artifactId>spotless-maven-plugin</artifactId>
           <version>2.43.0</version>
