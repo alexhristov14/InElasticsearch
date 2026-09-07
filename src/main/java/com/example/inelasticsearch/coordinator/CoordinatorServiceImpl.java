@@ -65,7 +65,15 @@ public class CoordinatorServiceImpl extends DataNodeServiceGrpc.DataNodeServiceI
       nodeClients.put(node.id(), new DataNodeClient(node.host(), node.port()));
     }
     this.selector = new ShardCopySelector(topology);
-    this.executor = Executors.newFixedThreadPool(Math.max(1, topology.nodes().size()));
+    // Cached, not fixed: this pool is shared by every concurrent search() call for the
+    // coordinator's whole lifetime (see #search), each of which needs up to nodes().size()
+    // threads at once for its fan-out. A fixed pool sized to the node count works for one
+    // search at a time, but two concurrent searches would then queue behind each other for the
+    // same threads -- and invokeAll's timeout can cancel a task that never even got a thread,
+    // making a perfectly healthy node look like it failed. A cached pool hands out a new thread
+    // to any task with none idle (no queueing before a task starts) and reclaims idle threads
+    // after 60s, so concurrent requests don't contend with each other.
+    this.executor = Executors.newCachedThreadPool();
   }
 
   /** Routes to the target shard's single primary. See the class doc's write-path note. */

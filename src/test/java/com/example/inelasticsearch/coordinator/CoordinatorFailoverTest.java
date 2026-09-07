@@ -22,6 +22,11 @@ import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
@@ -132,6 +137,52 @@ public class CoordinatorFailoverTest {
           response.getHitsList().stream().map(Document::getId).collect(Collectors.toList());
       assertEquals(docIds.size(), hitIds.size());
       assertTrue(hitIds.containsAll(docIds));
+    }
+  }
+
+  @Test
+  public void search_manyConcurrentRequests_allSucceedWithoutContention() throws Exception {
+    // Regression coverage for the coordinator's search executor being a shared cached pool
+    // rather than a fixed one sized to the node count: with a fixed pool, enough concurrent
+    // requests could starve each other's fan-out tasks of a thread until invokeAll's timeout
+    // cancelled them, making a perfectly healthy node look like it had failed.
+    List<String> docIds = new ArrayList<>();
+    for (int shardId = 0; shardId < topology.totalShards(); shardId++) {
+      String docId = docIdForShard(shardId);
+      docIds.add(docId);
+      indexDoc(docId, "hello concurrent");
+      waitForReplicaCopy(shardId, "concurrent");
+    }
+
+    int concurrentRequests = 10;
+    ExecutorService clientExecutor = Executors.newFixedThreadPool(concurrentRequests);
+    try {
+      CountDownLatch ready = new CountDownLatch(concurrentRequests);
+      CountDownLatch start = new CountDownLatch(1);
+      List<Future<SearchResponse>> futures = new ArrayList<>();
+      for (int i = 0; i < concurrentRequests; i++) {
+        futures.add(
+            clientExecutor.submit(
+                () -> {
+                  ready.countDown();
+                  start.await();
+                  return search("concurrent");
+                }));
+      }
+      ready.await();
+      start.countDown();
+
+      for (Future<SearchResponse> future : futures) {
+        SearchResponse response = future.get(10, TimeUnit.SECONDS);
+        assertTrue(response.getErrorMessage(), response.getSuccess());
+        assertTrue(response.getErrorMessage().isEmpty());
+        List<String> hitIds =
+            response.getHitsList().stream().map(Document::getId).collect(Collectors.toList());
+        assertEquals(docIds.size(), hitIds.size());
+        assertTrue(hitIds.containsAll(docIds));
+      }
+    } finally {
+      clientExecutor.shutdown();
     }
   }
 

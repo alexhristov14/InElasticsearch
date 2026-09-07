@@ -1,0 +1,5 @@
+com.example.inelasticsearch
+com.example.inelasticsearch.cluster
+com.example.inelasticsearch.coordinator
+com.example.inelasticsearch.grpc
+com.example.inelasticsearch.index
