@@ -98,6 +98,28 @@ message SearchResponse {
   repeated Document hits = 3;
 }
 
+message UpsertRequest {
+  string index_name = 1;
+  string doc_id = 2;
+  Document updated_doc = 3;
+}
+
+message UpsertResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+message BulkUpsertRequest {
+  string index_name = 1;
+  repeated string doc_ids = 2;
+  repeated Document documents = 3;
+}
+
+message BulkUpsertResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
 // The one contract implemented by both a data node and the coordinator (see the package-level
 // comment above). RPCs split into two groups: IndexDocument/BulkIndexDocument/DeleteDocument/
 // Search are the client-facing surface; ReplicateDocument/ReplicateBulkIndex/ReplicateDelete are
